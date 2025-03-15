@@ -1,151 +1,140 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from keras.models import load_model
 import matplotlib.pyplot as plt
 import yfinance as yf
-from datetime import date
+from datetime import date, datetime
+from keras.models import load_model
 from prophet import Prophet
 from prophet.plot import plot_plotly
-from plotly import graph_objs as go
+from sklearn.preprocessing import MinMaxScaler
 
 
+st.title("Stock Price Prediction Web App 📈")
 
-st.title("Stock Price Prediction Web App")
+stock = st.text_input("Enter The Stock Symbol", "GOOGL").upper()
 
-stock=st.text_input("Enter The Stock Id","GOOGL")
+end = date.today().strftime("%Y-%m-%d")
+start = "2015-01-01"
 
-
-
-end=date.today().strftime("%Y-%m-%d")
-start="2015-01-01"
-
-
-google_data=yf.download(stock,start,end)
-
-model=load_model("Stock_Price_Model.keras")
+try:
+    stock_data = yf.download(stock, start, end)
+    if stock_data.empty:
+        st.error(f"No data found for {stock}. Please enter a valid stock ticker.")
+        st.stop()
+except Exception as e:
+    st.error(f"Error fetching data: {e}")
+    st.stop()
 
 st.subheader("Stock Data")
-st.write(google_data)
+st.write(stock_data)
 
-splitting_len=int(len(google_data)*0.7)
+if "Close" not in stock_data.columns:
+    st.error("The dataset does not contain a 'Close' column.")
+    st.stop()
 
-x_test=pd.DataFrame(google_data.Close[splitting_len:])
+splitting_len = int(len(stock_data) * 0.7)
 
-def plot_graph(figsize,values,full_data,extra_data=0,extra_dataset=None):
-    fig=plt.figure(figsize=figsize)
-    plt.plot(values,'Orange')
-    plt.plot(full_data.Close,'b')
-    if extra_data:
-        plt.plot(extra_data)
+x_test = stock_data[['Close']].iloc[splitting_len:].copy()
+
+def plot_graph(figsize, values, full_data, extra_data=0, extra_dataset=None):
+    fig = plt.figure(figsize=figsize)
+    plt.plot(values, 'Orange', label="Moving Average")
+    plt.plot(full_data.Close, 'b', label="Original Close Price")
     
+    if extra_data:
+        plt.plot(extra_dataset, label="Extra Data", color='g')
+    
+    plt.legend()
+    
+   
+    plt.xlabel("Year")  
+    plt.ylabel("Close Price") 
     
     return fig
 
-st.subheader('Original Close Price and MA for 250 Days')
-google_data['MA_for_250_days']=google_data.Close.rolling(250).mean()
-st.pyplot(plot_graph((15,6),google_data['MA_for_250_days'],google_data,0))
+for days in [250, 200, 100]:
+    stock_data[f'MA_{days}_days'] = stock_data['Close'].rolling(days).mean()
 
+st.subheader('Original Close Price, MA for 100 Days & MA for 250 Days')
+st.pyplot(plot_graph((15,6), stock_data['MA_100_days'], stock_data, 1, stock_data['MA_250_days']))
 
-st.subheader('Original Close Price and MA for 200 Days')
-google_data['MA_for_200_days']=google_data.Close.rolling(200).mean()
-st.pyplot(plot_graph((15,6),google_data['MA_for_200_days'],google_data,0))
+scaler = MinMaxScaler(feature_range=(0,1))
+scaled_data = scaler.fit_transform(x_test[['Close']])
 
-st.subheader('Original Close Price and MA for 100 Days')
-google_data['MA_for_100_days']=google_data.Close.rolling(100).mean()
-st.pyplot(plot_graph((15,6),google_data['MA_for_100_days'],google_data,0))
-
-st.subheader('Original Close Price and MA for 100 Days and MA for 250 days ')
-st.pyplot(plot_graph((15,5),google_data['MA_for_100_days'],google_data,1,google_data['MA_for_250_days']))
-
-
-from sklearn.preprocessing import MinMaxScaler
-
-scaler=MinMaxScaler(feature_range=(0,1))
-scaled_data=scaler.fit_transform(x_test[['Close']])
-
-
-x_data=[]
-y_data=[]
-
-
-for i in range(100,len(scaled_data)):
+x_data, y_data = [], []
+for i in range(100, len(scaled_data)):
     x_data.append(scaled_data[i-100:i])
     y_data.append(scaled_data[i])
 
+x_data, y_data = np.array(x_data), np.array(y_data)
 
-x_data,y_data=np.array(x_data),np.array(y_data)
-predictions=model.predict(x_data)
+try:
+    model = load_model("Stock_Price_Model.keras")
+except Exception as e:
+    st.error(f"Error loading LSTM model: {e}")
+    st.stop()
 
+predictions = model.predict(x_data)
 
-inv_pre=scaler.inverse_transform(predictions)
-inv_y_test=scaler.inverse_transform(y_data)
+inv_pre = scaler.inverse_transform(predictions)
+inv_y_test = scaler.inverse_transform(y_data)
 
+ploting_data = pd.DataFrame({
+    'Original': inv_y_test.reshape(-1),
+    'Predicted': inv_pre.reshape(-1)
+}, index=stock_data.index[splitting_len+100:])
 
-
-ploting_data=pd.DataFrame(
-    {
-        'original_test_data':inv_y_test.reshape(-1),
-        'predictions':inv_pre.reshape(-1)
-    },
-    index=google_data.index[splitting_len+100:]
-)
-st.subheader("Original values vs Predicted Values")
+st.subheader("Original vs Predicted Values (LSTM)")
 st.write(ploting_data)
 
-
 st.subheader('Original Close Price vs Predicted Close Price')
-fig=plt.figure(figsize=(15,6))
-plt.plot(pd.concat([google_data.Close[:splitting_len+100],ploting_data],axis=0))
-plt.legend(["Data-not Used","Original Test Data","Predicted Test Data"])
+fig = plt.figure(figsize=(15,6))
+plt.plot(pd.concat([stock_data.Close[:splitting_len+100], ploting_data], axis=0))
+plt.legend(["Data-not Used", "Original Test Data", "Predicted Test Data"])
+
+plt.xlabel("Year")
+plt.ylabel("Close Price") 
+
 st.pyplot(fig)
 
-#Future
+st.title("Stock Price Forecasting with Prophet")
 
 prediction_periods = st.slider("Select Prediction Period (in days)", min_value=1, max_value=365, value=30)
-#n_years = st.slider('Years of prediction:', 1, 4)
-period = prediction_periods*1
+period = prediction_periods * 1
+
+if isinstance(stock_data.columns, pd.MultiIndex):
+    stock_data.columns = ['_'.join(col) for col in stock_data.columns]
+
+close_column = [col for col in stock_data.columns if 'Close' in col][0]
+df = stock_data[[close_column]].reset_index()
+df.rename(columns={'Date': 'ds', close_column: 'y'}, inplace=True)
+
+df['y'] = pd.to_numeric(df['y'], errors='coerce')  
+df['ds'] = pd.to_datetime(df['ds']) 
+df = df.dropna() 
 
 
-@st.cache_data
-def load_data(ticker):
-    data = yf.download(ticker, start, end)
-    data.reset_index(inplace=True)
-    return data
+st.subheader("Prepared Data for Prophet")
+st.write(df.tail())
+
+model = Prophet()
+model.fit(df)
+
+future = model.make_future_dataframe(periods=period) 
+forecast = model.predict(future)
+
+st.subheader("Forecast Data")
+st.write(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail())
+
+st.subheader("Forecast Plot")
+fig = plot_plotly(model, forecast)
+
+fig.update_layout(
+    xaxis_title="Year", 
+    yaxis_title="Close Price"  
+)
+
+st.plotly_chart(fig)
 
 
-data_load_state = st.text('Loading data...')
-data = load_data(stock)
-data_load_state.text('Loading data... done!')
-
-
-st.subheader('Raw data')
-st.write(data.tail())
-
-# Plot raw data
-def plot_raw_data():
-	fig = go.Figure()
-	fig.add_trace(go.Scatter(x=data['Date'], y=data['Open'], name="stock_open"))
-	fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], name="stock_close"))
-	fig.layout.update(title_text='Time Series data with Rangeslider', xaxis_rangeslider_visible=True)
-	st.plotly_chart(fig)
-	
-plot_raw_data()
-
-# Predict forecast with Prophet.
-df_train = data[['Date','Close']]
-df_train = df_train.rename(columns={"Date": "ds", "Close": "y"})
-
-m = Prophet()
-m.fit(df_train)
-future = m.make_future_dataframe(periods=period)
-forecast = m.predict(future)
-
-# Show and plot forecast
-st.subheader('Forecast data')
-st.write(forecast.tail())
-
-
-st.subheader(f'Forecast plot for {prediction_periods} Days')
-fig1 = plot_plotly(m, forecast)
-st.plotly_chart(fig1)
